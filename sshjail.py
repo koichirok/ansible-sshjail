@@ -2,6 +2,8 @@ from __future__ import (absolute_import, division, print_function)
 
 import os
 import pipes
+import shlex
+import re
 
 from ansible.errors import AnsibleError
 from ansible.plugins.connection.ssh import Connection as SSHConnection
@@ -248,6 +250,11 @@ class Connection(ConnectionBase):
 
         # logging.warning(self._play_context.connection)
 
+        # get become commnad's begining part. used by self._strip_become()
+        cmd = self._play_context.make_become_cmd('dummy-cmd')
+        echo = 'echo BECOME-SUCCESS-'
+        self._begining_of_become_cmd = cmd[0:cmd.find(echo)+len(echo)]
+
     def match_jail(self):
         if self.jid is None:
             code, stdout, stderr = self._jailhost_command("jls -q jid name host.hostname path")
@@ -289,23 +296,29 @@ class Connection(ConnectionBase):
                 self.connector = 'jailme'
         return self.connector
 
-    def _strip_sudo(self, executable, cmd):
-        # Get the command without sudo
-        sudoless = cmd.rsplit(executable + ' -c ', 1)[1]
-        # Get the quotes
-        quotes = sudoless.partition('echo')[0]
-        # Get the string between the quotes
-        cmd = sudoless[len(quotes):-len(quotes+'?')]
-        # Drop the first command becasue we don't need it
-        cmd = cmd.split('; ', 1)[1]
+    def _strip_become(self, cmd):
+        if not cmd.startswith(self._begining_of_become_cmd):
+            tokens = shlex.split(cmd)
+            if len(tokens) == 1:
+                return tokens[0]
+            res = []
+            for x in tokens:
+                if x:
+                    res.append(pipes.quote(self._strip_become(x)))
+            return ' '.join(res)
+
+        for x in shlex.split(cmd):
+            if x.startswith('echo BECOME-SUCCESS-'):
+                cmds = x.split('; ',1)
+                become_cmd = re.sub(r'echo BECOME-SUCCESS-[^;]*',cmds[0], self._play_context.make_become_cmd(cmds[1]))
+                if become_cmd == cmd:
+                    return cmds[1]
+        # give up to strip, return as-is
         return cmd
 
     def _strip_sleep(self, cmd):
-        # Get the command without sleep
-        cmd = cmd.split(' && sleep 0', 1)[0]
-        # Add back trailing quote
-        cmd = '%s%s' % (cmd, "'")
-        return cmd
+        # Get the command without sleep (also remove quotes if possible)
+        return re.subn(r'([\'"]*) && sleep 0\1', '', cmd, 1)[0]
 
     def _jailhost_command(self, cmd):
         return super(Connection, self).exec_command(cmd, in_data=None, sudoable=True)
@@ -319,9 +332,8 @@ class Connection(ConnectionBase):
             cmd = self._strip_sleep(cmd)
 
         if 'sudo' in cmd:
-            cmd = self._strip_sudo(executable, cmd)
+            cmd = self._strip_become(cmd)
 
-        cmd = ' '.join([executable, '-c', pipes.quote(cmd)])
         if slpcmd:
             cmd = '%s %s %s %s' % (self.get_jail_connector(), self.get_jail_id(), cmd, '&& sleep 0')
         else:
