@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  role_name: sshjail_plugin
+#  author: KIKUCHI Koichiro
+  description: sshjail connection plugin
+  license: MIT
+  min_ansible_version: 2.4
+
+  platforms:
+    - name: FreeBSD
+      versions:
+      - all
+
+  galaxy_tags: []
+    - FreeBSD
+    - jails
+
+dependencies: []
